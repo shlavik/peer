@@ -5,17 +5,38 @@ use async_std::task;
 use std::collections::HashMap;
 use std::io::Result;
 
+#[async_trait::async_trait]
+pub trait Protocol {
+    async fn handle_message(&self, peer: Arc<Peer>, addr: SocketAddr, message: Vec<u8>);
+}
+
+pub struct GossipProtocol;
+
+#[async_trait::async_trait]
+impl Protocol for GossipProtocol {
+    async fn handle_message(&self, peer: Arc<Peer>, addr: SocketAddr, message: Vec<u8>) {
+        println!(
+            "Gossip received from {}: {}",
+            addr,
+            String::from_utf8_lossy(&message)
+        );
+        peer.broadcast_message(&message, Some(addr)).await;
+    }
+}
+
 pub struct Peer {
     listener: TcpListener,
     connections: Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
+    protocol: Arc<dyn Protocol + Send + Sync>,
 }
 
 impl Peer {
-    pub async fn new(port: u16) -> Result<Self> {
-        let listener = TcpListener::bind(("0.0.0.0", port)).await?;
+    pub async fn new(port: u16, protocol: Arc<dyn Protocol + Send + Sync>) -> Result<Self> {
+        let listener = TcpListener::bind(("127.0.0.1", port)).await?;
         Ok(Self {
             listener,
             connections: Arc::new(Mutex::new(HashMap::new())),
+            protocol,
         })
     }
 
@@ -40,11 +61,9 @@ impl Peer {
             if n == 0 {
                 break;
             }
-            println!(
-                "Received from {}: {}",
-                addr,
-                String::from_utf8_lossy(&buffer[..n])
-            );
+            self.protocol
+                .handle_message(self.clone(), addr, buffer[..n].to_vec())
+                .await;
         }
         self.remove_peer(addr).await;
         Ok(())
@@ -60,11 +79,16 @@ impl Peer {
         );
     }
 
-    pub async fn broadcast_message(&self, message: &[u8]) {
+    pub async fn broadcast_message(&self, message: &[u8], except_addr: Option<SocketAddr>) {
         let connections = self.connections.lock().await;
-        for mut stream in connections.values() {
+        for (addr, mut stream) in &*connections {
+            if let Some(except_addr) = except_addr {
+                if *addr == except_addr {
+                    continue;
+                }
+            }
             if let Err(e) = stream.write_all(message).await {
-                eprintln!("Failed to send message: {}", e);
+                eprintln!("Failed to send message to {}: {}", addr, e);
             }
         }
     }

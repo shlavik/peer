@@ -5,7 +5,7 @@ use futures::join;
 use std::time::Duration;
 
 mod peer;
-use peer::Peer;
+use peer::{GossipProtocol, Peer};
 
 /// A simple P2P CLI demo application
 #[derive(Debug, Parser)]
@@ -27,7 +27,8 @@ struct Args {
 #[async_std::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
-    let peer = Arc::new(Peer::new(args.port).await?);
+    let gossip_protocol = Arc::new(GossipProtocol);
+    let peer = Arc::new(Peer::new(args.port, gossip_protocol).await?);
 
     let run_task = {
         let peer = peer.clone();
@@ -51,9 +52,11 @@ async fn main() -> std::io::Result<()> {
         let peer = peer.clone();
         task::spawn(async move {
             let interval = Duration::from_secs(args.period);
+            let binding = args.port.to_string();
+            let message = binding.as_bytes();
             loop {
                 task::sleep(interval).await;
-                peer.broadcast_message(b"Periodic message").await;
+                peer.broadcast_message(message, None).await;
             }
         })
     };
