@@ -1,11 +1,11 @@
+use async_std::net::SocketAddr;
 use async_std::sync::Arc;
 use async_std::task;
 use clap::Parser;
 use futures::join;
 use std::time::Duration;
 
-mod peer;
-use peer::{GossipProtocol, Peer};
+use peer::{GossipProtocol, Message, Peer};
 
 /// A simple P2P CLI demo application
 #[derive(Debug, Parser)]
@@ -39,6 +39,7 @@ async fn main() -> std::io::Result<()> {
 
     let connect_task = {
         if let Some(addr) = args.connect {
+            let addr = addr.parse::<SocketAddr>().unwrap();
             let peer = peer.clone();
             task::spawn(async move {
                 peer.connect_to_peer(addr).await.unwrap();
@@ -50,13 +51,12 @@ async fn main() -> std::io::Result<()> {
 
     let periodic_task = {
         let peer = peer.clone();
+        let message = Message::new(peer.listener.local_addr()?, "1234567890".to_string());
         task::spawn(async move {
             let interval = Duration::from_secs(args.period);
-            let binding = args.port.to_string();
-            let message = binding.as_bytes();
             loop {
                 task::sleep(interval).await;
-                peer.broadcast_message(message, None).await;
+                let _ = peer.broadcast_message(message.clone(), None).await;
             }
         })
     };
