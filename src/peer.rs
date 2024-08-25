@@ -2,39 +2,58 @@ use async_std::io::{ReadExt, WriteExt};
 use async_std::net::{SocketAddr, TcpListener, TcpStream};
 use async_std::sync::{Arc, Mutex};
 use async_std::task;
-use std::collections::HashMap;
 use std::io::Result;
 
-use crate::message::Message;
-
-#[async_trait::async_trait]
-pub trait Protocol {
-    async fn handle_message(&self, peer: Arc<Peer>, addr: SocketAddr, message: Message);
-}
+use crate::*;
 
 pub struct Peer {
-    pub listener: TcpListener,
-    connections: Arc<Mutex<HashMap<SocketAddr, TcpStream>>>,
-    protocol: Arc<dyn Protocol + Send + Sync>,
+    addr: SocketAddr,
+    listener: TcpListener,
+    protocols: Arc<Mutex<Vec<Arc<dyn Protocol>>>>,
+    peer_store: Arc<PeerStore>,
 }
 
 impl Peer {
-    pub async fn new(port: u16, protocol: Arc<dyn Protocol + Send + Sync>) -> Result<Self> {
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
-        let listener = TcpListener::bind(addr).await?;
-        Ok(Self {
-            listener,
-            connections: Arc::new(Mutex::new(HashMap::new())),
-            protocol,
-        })
+    pub const BUFFER_SIZE: usize = 1024;
+
+    pub async fn new(addr: SocketAddr, peer_store: Arc<PeerStore>) -> Result<Arc<Self>> {
+        Ok(Arc::new(Peer {
+            addr,
+            listener: TcpListener::bind(addr).await?,
+            protocols: Arc::new(Mutex::new(Vec::new())),
+            peer_store,
+        }))
     }
 
-    pub async fn run(self: Arc<Self>) -> Result<()> {
-        println!("Listening on {}", self.listener.local_addr()?);
+    pub fn get_addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    pub async fn register_protocol(&self, protocol: Arc<dyn Protocol>) -> Result<()> {
+        self.protocols.lock().await.push(protocol);
+        Ok(())
+    }
+
+    pub async fn add_peer(&self, addr: SocketAddr, stream: TcpStream) -> Result<()> {
+        self.peer_store.clone().add_peer(addr, stream).await?;
+        let peer_addrs = self
+            .peer_store
+            .get_peers()
+            .await
+            .keys()
+            .map(|addr| addr.to_string())
+            .collect::<Vec<_>>()
+            .join("\", \"");
+        log(format!("Connected to the peers at [\"{}\"]", peer_addrs));
+        Ok(())
+    }
+
+    pub async fn start(self: Arc<Self>) -> Result<()> {
+        log(format!("My address is \"{}\"", self.listener.local_addr()?));
         while let Ok((stream, _)) = self.listener.accept().await {
-            let peer = self.clone();
+            let this = self.clone();
             task::spawn(async move {
-                if let Err(e) = peer.handle_connection(stream).await {
+                if let Err(e) = this.handle_connection(stream).await {
                     eprintln!("Error handling connection: {}", e);
                 }
             });
@@ -42,59 +61,55 @@ impl Peer {
         Ok(())
     }
 
-    async fn handle_connection(self: Arc<Self>, mut stream: TcpStream) -> Result<()> {
-        let addr = stream.peer_addr()?;
-        self.connections.lock().await.insert(addr, stream.clone());
-        let mut buffer = [0; 1024];
+    async fn handle_connection(&self, mut stream: TcpStream) -> Result<()> {
+        let mut buffer = [0; Self::BUFFER_SIZE];
         while let Ok(n) = stream.read(&mut buffer).await {
             if n == 0 {
                 break;
+            };
+            let kind = MessageKind::from(buffer);
+            if let MessageKind::Handshake(message) = &kind {
+                let _ = self.add_peer(message.from, stream.clone()).await;
             }
-            self.protocol
-                .handle_message(self.clone(), addr, buffer.into())
-                .await;
-        }
-        self.remove_peer(addr).await;
-        Ok(())
-    }
-
-    async fn remove_peer(self: Arc<Self>, addr: SocketAddr) {
-        let mut connections = self.connections.lock().await;
-        connections.remove(&addr);
-        println!(
-            "Peer {} removed. Active peers: {:?}",
-            addr,
-            connections.keys()
-        );
-    }
-
-    pub async fn broadcast_message(
-        &self,
-        message: Message,
-        except_addr: Option<SocketAddr>,
-    ) -> Result<()> {
-        let buffer: [u8; 1024] = message.into();
-        for (addr, mut stream) in &*self.connections.lock().await {
-            if let Some(except_addr) = except_addr {
-                if *addr == except_addr {
-                    continue;
-                }
-            }
-            if let Err(e) = stream.write_all(&buffer).await {
-                eprintln!("Failed to send message to {}: {}", addr, e);
+            for protocol in self.protocols.lock().await.iter() {
+                protocol.handle_message(&kind).await;
             }
         }
         Ok(())
     }
 
     pub async fn connect_to_peer(self: Arc<Self>, addr: SocketAddr) -> Result<()> {
+        if addr == self.get_addr() {
+            return Ok(());
+        }
+        if self.peer_store.clone().has_peer(&addr).await {
+            return Ok(());
+        }
         let stream = TcpStream::connect(addr).await?;
-        let peer = self.clone();
+        let _ = self.add_peer(addr, stream.clone()).await;
+        let this = self.clone();
         task::spawn(async move {
-            if let Err(e) = peer.handle_connection(stream).await {
-                eprintln!("Error in connection: {}", e);
+            if let Err(e) = this.shake_hand().await {
+                eprintln!("Error shaking hand: {}", e);
             }
         });
+        let this = self.clone();
+        task::spawn(async move {
+            if let Err(e) = this.handle_connection(stream).await {
+                eprintln!("Error handling connection: {}", e);
+            }
+        });
+        Ok(())
+    }
+
+    pub async fn shake_hand(&self) -> Result<()> {
+        let message = MessageKind::Handshake(Message::new(0, self.get_addr(), None));
+        let buffer: [u8; Self::BUFFER_SIZE] = message.into();
+        for (_, mut stream) in self.peer_store.get_peers().await {
+            if let Err(e) = stream.write_all(&buffer).await {
+                eprintln!("Failed to send handshake: {}", e);
+            }
+        }
         Ok(())
     }
 }

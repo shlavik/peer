@@ -1,11 +1,9 @@
 use async_std::net::SocketAddr;
-use async_std::sync::Arc;
 use async_std::task;
 use clap::Parser;
 use futures::join;
-use std::time::Duration;
 
-use peer::{GossipProtocol, Message, Peer};
+use peer::{DirectFlood, GossipDiscovery, Peer, PeerStore};
 
 /// A simple P2P CLI demo application
 #[derive(Debug, Parser)]
@@ -27,20 +25,37 @@ struct Args {
 #[async_std::main]
 async fn main() -> std::io::Result<()> {
     let args = Args::parse();
-    let gossip_protocol = Arc::new(GossipProtocol);
-    let peer = Arc::new(Peer::new(args.port, gossip_protocol).await?);
+    let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
+    let peer_store = PeerStore::new();
+    let peer = Peer::new(addr, peer_store.clone()).await?;
+    let discovery = GossipDiscovery::new(peer.clone(), peer_store.clone(), args.period);
+    let flood = DirectFlood::new(peer.clone(), peer_store, args.period);
 
-    let run_task = {
+    peer.clone().register_protocol(discovery.clone()).await?;
+    peer.clone().register_protocol(flood.clone()).await?;
+
+    let peer_task = {
         let peer = peer.clone();
         task::spawn(async move {
-            peer.run().await.unwrap();
+            peer.start().await.unwrap();
+        })
+    };
+
+    let discovery_task = {
+        task::spawn(async move {
+            discovery.start().await.unwrap();
+        })
+    };
+
+    let flood_task = {
+        task::spawn(async move {
+            flood.start().await.unwrap();
         })
     };
 
     let connect_task = {
-        if let Some(addr) = args.connect {
-            let addr = addr.parse::<SocketAddr>().unwrap();
-            let peer = peer.clone();
+        if let Some(addr_str) = args.connect {
+            let addr = addr_str.parse::<SocketAddr>().unwrap();
             task::spawn(async move {
                 peer.connect_to_peer(addr).await.unwrap();
             })
@@ -49,19 +64,7 @@ async fn main() -> std::io::Result<()> {
         }
     };
 
-    let periodic_task = {
-        let peer = peer.clone();
-        let message = Message::new(peer.listener.local_addr()?, "1234567890".to_string());
-        task::spawn(async move {
-            let interval = Duration::from_secs(args.period);
-            loop {
-                task::sleep(interval).await;
-                let _ = peer.broadcast_message(message.clone(), None).await;
-            }
-        })
-    };
-
-    join!(run_task, connect_task, periodic_task);
+    join!(peer_task, discovery_task, flood_task, connect_task);
 
     Ok(())
 }
