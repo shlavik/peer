@@ -1,7 +1,7 @@
+use anyhow::{Ok, Result};
 use async_std::io::WriteExt;
 use async_std::sync::Arc;
 use async_std::task;
-use std::io::Result;
 use std::time::Duration;
 
 use crate::*;
@@ -29,7 +29,7 @@ impl DirectFlood {
                 task::sleep(interval).await;
                 let this = self.clone();
                 if let Err(e) = this.send_message(message.clone()).await {
-                    eprintln!("Failed to broadcast message: {}", e);
+                    eprintln!("Failed to broadcast message: {e:?}");
                 }
             }
         });
@@ -37,26 +37,28 @@ impl DirectFlood {
     }
 
     pub async fn send_message(&self, message: Message) -> Result<()> {
-        let peer_addrs = self
-            .peer_store
-            .get_peers()
-            .await
-            .keys()
-            .map(|addr| addr.to_string())
-            .collect::<Vec<_>>()
-            .join("\", \"");
-        log(format!(
-            "Sending message \"{}\" to [\"{}\"]",
-            message.clone().payload.unwrap(),
-            peer_addrs
-        ));
-        let buffer: [u8; Peer::BUFFER_SIZE] = MessageKind::Direct(message).into();
-        for (_, mut stream) in self.peer_store.clone().get_peers().await {
-            if let Err(e) = stream.write_all(&buffer).await {
-                eprintln!("Failed to broadcast message: {}", e);
+        let peers = self.peer_store.get_peers().await;
+        if peers.is_empty() {
+            Ok(())
+        } else {
+            let peer_addrs = peers
+                .keys()
+                .map(|addr| addr.to_string())
+                .collect::<Vec<_>>()
+                .join("\", \"");
+            log(format!(
+                "Sending message \"{}\" to [\"{}\"]",
+                message.clone().payload.unwrap(),
+                peer_addrs
+            ));
+            let buffer: [u8; Peer::BUFFER_SIZE] = MessageKind::Direct(message).into();
+            for (_, mut stream) in self.peer_store.clone().get_peers().await {
+                if let Err(e) = stream.write_all(&buffer).await {
+                    eprintln!("Failed to broadcast message: {e:?}");
+                }
             }
+            Ok(())
         }
-        Ok(())
     }
 }
 

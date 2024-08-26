@@ -1,8 +1,8 @@
+use anyhow::Result;
 use async_std::net::{SocketAddr, TcpStream};
 use async_std::sync::{Arc, Mutex};
 use futures::AsyncWriteExt;
 use std::collections::HashMap;
-use std::io::Result;
 
 #[derive(Debug, Default)]
 pub struct PeerStore {
@@ -31,7 +31,7 @@ impl PeerStore {
     pub async fn remove_peer(self: Arc<Self>, addr: SocketAddr) -> Result<()> {
         if let Some(mut stream) = self.peers.lock().await.remove(&addr) {
             if let Err(e) = stream.close().await {
-                eprintln!("Failed to close stream: {}", e);
+                eprintln!("Failed to close stream: {e:?}");
             }
         }
         Ok(())

@@ -1,6 +1,3 @@
-use chrono::Local;
-use std::fmt::Display;
-
-pub fn log<T: Display>(string: T) {
-    println!("{} | {}", Local::now().format("%H:%M:%S"), string);
+pub fn log<T: std::fmt::Display>(string: T) {
+    println!("{} | {}", chrono::Local::now().format("%H:%M:%S"), string);
 }

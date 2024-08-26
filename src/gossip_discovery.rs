@@ -1,7 +1,7 @@
+use anyhow::Result;
 use async_std::io::WriteExt;
 use async_std::sync::Arc;
 use async_std::task;
-use std::io::Result;
 use std::time::Duration;
 
 use crate::*;
@@ -29,7 +29,7 @@ impl GossipDiscovery {
             loop {
                 task::sleep(interval).await;
                 if let Err(e) = this.broadcast_message(message.clone()).await {
-                    eprintln!("Failed to broadcast message: {}", e);
+                    eprintln!("Failed to broadcast message: {e:?}");
                 }
             }
         });
@@ -42,7 +42,7 @@ impl GossipDiscovery {
             if addr != message.from {
                 if let Err(e) = stream.write_all(&buffer).await {
                     let _ = self.peer_store.clone().remove_peer(addr).await;
-                    eprintln!("Failed to broadcast message: {}", e);
+                    eprintln!("Failed to broadcast message: {e:?}");
                 }
             }
         }
@@ -58,7 +58,7 @@ impl Protocol for GossipDiscovery {
                 let _ = self.peer.clone().connect_to_peer(message.from).await;
                 let message = Message::new(message.ttl - 1, message.from, None);
                 if let Err(e) = self.broadcast_message(message).await {
-                    eprintln!("Failed to broadcast message: {}", e);
+                    eprintln!("Failed to broadcast message: {e:?}");
                 }
             }
         }

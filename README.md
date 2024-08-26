@@ -7,6 +7,7 @@
 ```bash
 cargo build --release
 ```
+note: look for build artifacts in the `target/release` directory
 
 ## Options
 

@@ -1,3 +1,4 @@
+use anyhow::Result;
 use async_std::net::SocketAddr;
 use async_std::task;
 use clap::Parser;
@@ -23,7 +24,7 @@ struct Args {
 }
 
 #[async_std::main]
-async fn main() -> std::io::Result<()> {
+async fn main() -> Result<()> {
     let args = Args::parse();
     let addr = SocketAddr::from(([127, 0, 0, 1], args.port));
     let peer_store = PeerStore::new();
@@ -55,9 +56,11 @@ async fn main() -> std::io::Result<()> {
 
     let connect_task = {
         if let Some(addr_str) = args.connect {
-            let addr = addr_str.parse::<SocketAddr>().unwrap();
+            let addr = addr_str.parse::<SocketAddr>()?;
             task::spawn(async move {
-                peer.connect_to_peer(addr).await.unwrap();
+                if let Err(e) = peer.connect_to_peer(addr).await {
+                    eprintln!("Error: {e:?}");
+                }
             })
         } else {
             task::spawn(async {})
